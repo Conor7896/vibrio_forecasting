@@ -25,26 +25,34 @@ This repository contains all analysis scripts used for modeling and visualizatio
 
 Script descriptions
 
-graphs_paper.R
+graphs_paper.R:
+
 Produces all figures and visualizations included in the manuscript. This includes performance plots for LSTM and Random Forest models, confusion matrices, and weekly prediction summaries.
 
-lstm_all_models_val_all_timesteps_best_test.R
+lstm_all_models_val_all_timesteps_best_test.R:
+
 Trains and validates LSTM models across time steps 1–10 using leave-one-location-out validation. Selects the best-performing time step based on average validation AUPRC and evaluates all models from that step on the held-out test set.
 
-v_vul_16s_all_rf_time_lag_loop_val_loc.R
+v_vul_16s_all_rf_time_lag_loop_val_loc.R:
+
 Implements Random Forest models with time-lagged predictors using the extended 16S microbial dataset across all locations. Validation is performed using spatial leave-one-location-out cross-validation.
 
-v_vul_16s_rf_time_lag_loop_val_loc.R
+v_vul_16s_rf_time_lag_loop_val_loc.R:
+
 Runs Random Forest models with time-lagged predictors using the primary 16S microbial dataset. Validation is based on spatial leave-one-location-out cross-validation.
 
-v_vul_18s_all_rf_time_lag_loop_val_loc.R
+v_vul_18s_all_rf_time_lag_loop_val_loc.R:
+
 Implements Random Forest models with time-lagged predictors using the extended 18S microbial dataset across all locations. Spatial leave-one-location-out cross-validation ensures robust model evaluation.
 
-v_vul_18s_rf_time_lag_loop_val_loc.R
+v_vul_18s_rf_time_lag_loop_val_loc.R:
+
 Runs Random Forest models with time-lagged predictors using the primary 18S microbial dataset. Validation follows the spatial leave-one-location-out framework.
 
-v_vul_all_rf_models_loc.R
+v_vul_all_rf_models_loc.R:
+
 Summarizes and compares Random Forest performance across multiple datasets (16S, 18S, Copernicus, and environmental data) under consistent location-based validation.
 
-v_vul_copernicus_rf_time_lag_loop.R
+v_vul_copernicus_rf_time_lag_loop.R:
+
 Applies Random Forest models with time-lagged predictors to Copernicus satellite and environmental datasets. Uses spatial leave-one-location-out cross-validation for model validation and evaluation.
