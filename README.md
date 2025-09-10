@@ -25,34 +25,80 @@ This repository contains all analysis scripts used for modeling and visualizatio
 
 Script descriptions
 
-graphs_paper.R:
 
-Produces all figures and visualizations included in the manuscript. This includes performance plots for LSTM and Random Forest models, confusion matrices, and weekly prediction summaries.
+graphs_paper.R
+Generates all figures used in the manuscript. This includes:
+
+Performance curves (AUPRC, ROC-AUC) for LSTM and Random Forest models.
+
+Weekly summaries of predictions compared to observations.
+
+Confusion matrices broken down by time (e.g., true positives/negatives per week).
+
+Final polished plots formatted for publication.
 
 lstm_all_models_val_all_timesteps_best_test.R:
 
-Trains and validates LSTM models across time steps 1–10 using leave-one-location-out validation. Selects the best-performing time step based on average validation AUPRC and evaluates all models from that step on the held-out test set.
+Trains LSTM models to predict V. vulnificus presence from microbial or environmental predictors. The script:
+
+Evaluates time steps ranging from 1 to 10 days of input history.
+
+Uses leave-one-location-out validation across training locations to identify the best-performing time step based on average AUPRC.
+
+Selects the top fold within that time step and evaluates all models on the independent test set (locations 7, 11, and 13).
+
+Outputs validation and test AUPRC/ROC-AUC tables plus confusion matrices for interpretation.
+
 
 v_vul_16s_all_rf_time_lag_loop_val_loc.R:
 
-Implements Random Forest models with time-lagged predictors using the extended 16S microbial dataset across all locations. Validation is performed using spatial leave-one-location-out cross-validation.
+Builds Random Forest models using 16S microbial community data from all sampling locations. This script:
+
+Incorporates time-lagged microbial features (e.g., conditions in previous days).
+
+Performs spatial leave-one-location-out cross-validation.
+
+Records validation AUPRC and ROC-AUC across folds.
+
+Outputs model performance tables for later comparison across datasets.
+
 
 v_vul_16s_rf_time_lag_loop_val_loc.R:
 
-Runs Random Forest models with time-lagged predictors using the primary 16S microbial dataset. Validation is based on spatial leave-one-location-out cross-validation.
+Similar setup as above but restricted to the core 16S dataset (excluding extended “all locations” sequences). This provides a direct comparison between core and extended 16S microbial datasets.
+
 
 v_vul_18s_all_rf_time_lag_loop_val_loc.R:
 
-Implements Random Forest models with time-lagged predictors using the extended 18S microbial dataset across all locations. Spatial leave-one-location-out cross-validation ensures robust model evaluation.
+Implements Random Forest models with 18S microbial eukaryotic community data from all sampling locations. Key features:
 
-v_vul_18s_rf_time_lag_loop_val_loc.R:
+Time-lagged predictors to capture short-term microbial dynamics.
 
-Runs Random Forest models with time-lagged predictors using the primary 18S microbial dataset. Validation follows the spatial leave-one-location-out framework.
+Spatial leave-one-location-out validation.
+
+Outputs fold-wise AUPRC/ROC-AUC results for comparison with other data types.
+
+
+v_vul_18s_rf_time_lag_loop_val_loc.R
+Runs Random Forest models with primary 18S data only (without extended locations). Outputs are parallel to the “all” version, allowing performance comparison between primary and extended datasets.
+
 
 v_vul_all_rf_models_loc.R:
+Provides a cross-dataset Random Forest comparison. This script:
 
-Summarizes and compares Random Forest performance across multiple datasets (16S, 18S, Copernicus, and environmental data) under consistent location-based validation.
+Collects results from 16S, 18S, Copernicus, and environmental RF models.
+
+Summarizes performance metrics across datasets under consistent location-based validation.
+
+Produces tables and summary statistics used to compare predictive value of different data sources.
+
 
 v_vul_copernicus_rf_time_lag_loop.R:
 
-Applies Random Forest models with time-lagged predictors to Copernicus satellite and environmental datasets. Uses spatial leave-one-location-out cross-validation for model validation and evaluation.
+Runs Random Forest models using Copernicus satellite and environmental variables. This script:
+
+Builds time-lagged predictors from daily measurements (e.g., SST, salinity).
+
+Validates with spatial leave-one-location-out cross-validation.
+
+Outputs performance metrics and tables directly comparable to microbial-based models.
