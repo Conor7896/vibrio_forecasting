@@ -102,3 +102,59 @@ Builds time-lagged predictors from daily measurements (e.g., SST, salinity).
 Validates with spatial leave-one-location-out cross-validation.
 
 Outputs performance metrics and tables directly comparable to microbial-based models.
+
+
+
+Here is an update of some scripts:
+
+packages.R
+
+Sets up the R environment for the project. Installs and loads all required packages for data handling, visualization, Random Forest, and LSTM models (via reticulate, tensorflow, and keras3). Also contains helper functions for creating or refreshing the r-conda-tf TensorFlow environment.
+
+
+bootstrap_1000x.R
+
+Performs 1000 bootstrap resampling iterations of model performance metrics. Generates uncertainty estimates (e.g., distributions of AUPRC and ROC-AUC) for both Random Forest and LSTM models to quantify variability and confidence in model performance.
+
+
+target_scramble_1000x_2.R
+
+Runs a target-scrambling (permutation) experiment with 1000 iterations. The presence/absence labels are randomly shuffled for each iteration, models are re-trained, and a null distribution of performance metrics is produced. This is used to verify that observed model performance is significantly above chance.
+
+
+graphs_paper_2.R
+
+Creates updated, publication-ready figures for the manuscript. Integrates outputs from the bootstrap and target-scramble analyses, as well as refined weekly summaries. Produces AUPRC/ROC curves, bootstrap confidence distributions, null vs. observed comparisons, and weekly confusion-based barplots.
+
+
+lstm_conf_graph_2.R
+
+Processes LSTM prediction outputs to:
+
+determine decision thresholds (e.g., thresholds guaranteeing ≥ X% recall),
+
+classify predictions into TP/TN/FP/FN,
+
+generate weekly confusion summaries, and
+
+prepare tidy datasets for the confusion matrices and stacked weekly performance barplots.
+
+
+rf_time_lag_conf_graph_2.R
+
+Processes Random Forest time-lag model outputs to:
+
+compute probability thresholds for each dataset that achieve ≥ 50% recall,
+
+classify predictions into TP/TN/FP/FN,
+
+produce weekly summaries grouped by week_start, and
+
+generate confusion matrices and weekly stacked barplots for Copernicus, 16S, 16S_all, 18S, and 18S_all Random Forest models.
+
+
+Here is a description of all datasets used:
+
+join_all_current_discharge_hplc_temp_weather_full_year.csv
+
+A processed data file containing merged environmental and discharge variables used in Random Forest and LSTM analyses.
