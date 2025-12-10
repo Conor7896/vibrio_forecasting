@@ -1,6 +1,7 @@
 # Name: Conor Glackin
 # Date: 18 Feb 2025
 # Description: rf models for all datasets split by location in test set
+# you have to run v_vul_all_rf_models before this
 
 
 setwd("C:/Users/glack/Documents/vibrio_second_paper/")
@@ -20,8 +21,8 @@ join_all_current_discharge_hplc_temp_weather <- join_all_current_discharge_hplc_
     "downward_radiation", "diffuse_solar_radiation", 
     "sunshine_duration_solar", "temperature.y",
     "total_cell_counts" #, "siconc",  "ssh_1m",
-     # "mixed_layer_thickness_1h", "ssh_1_h","salinity_1h","salinity_sea_floor_1h","temp_potent_1h",          
-   # "velocity_south_1h","velocity_north_1h", "velocity_upward_1h" 
+    # "mixed_layer_thickness_1h", "ssh_1_h","salinity_1h","salinity_sea_floor_1h","temp_potent_1h",          
+    # "velocity_south_1h","velocity_north_1h", "velocity_upward_1h" 
   ))
 
 
@@ -252,7 +253,7 @@ table(y)
 # Step 2: Split dataset into training and testing
 
 data <- subset(data, location %in%  
-                                    c("1", "2", "3", "4", "5", "6", "7"))#, "8", "9", "10", "11", "12", "13", "14", "15"))
+                 c("1", "2", "3", "4", "5", "6", "7"))#, "8", "9", "10", "11", "12", "13", "14", "15"))
 
 # Step 2: Split dataset into training and testing
 
@@ -263,7 +264,7 @@ test_data  <- data %>% filter(location %in% c(7, 11, 13))
 #train_data$v_vul_presence <- sample(train_data$v_vul_presence)
 
 test_data_with_date <- test_data
-  
+
 # Remove duplicated columns
 train_data <- train_data %>% 
   select(-c("location", "date"))
@@ -285,155 +286,58 @@ train_control <- trainControl(method = "cv",
 # Tuning grid for Random Forest
 tune_grid <- expand.grid(mtry = c(2, 3))
 
+
 # Train the Random Forest model with cross-validation on the SMOTE balanced data
 set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)
 
-rf_model_cv$bestTune
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_all <- auc(roc_curve)
-print(auc_value_all)  # Area Under the Curve (AUC)
+# Display comparison
+cat("Real model AUPR (16S):", round(pr_value_all, 3), "\n")
 
-# Adjust the threhold o fix false positives
-threshold <- 0.64
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-conf_matrix_all <- confusionMatrix(as.factor(predicted_class_threshold), test_data$v_vul_presence)
-print(conf_matrix_all)
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_all <- mean(aupr_scrambled >= pr_value_all)
+cat("P-value (null AUPR ≥ real AUPR):", round(pr_value_all, 4), "\n")
 
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
 
-
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_all <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
-
-# Print the results_manual to verify
-print(results_manual_rf_all)
-
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_all %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_all <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Top 10 Important Variables (Regression Model)", x = "Variables", y = "Importance") +
+# Plot with ggplot2
+hist_all <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_all, color = "red", linewidth = 1.2) +
+  labs(title = "Combined dataset:\n Baltic Sea",
+       x = "AUPR (Scrambled)", y = "Count") +
   theme_minimal()
 
 
-subset <- importance_reg_df[1:10, ]
-
-taxV3_V4_16s <- read_csv("data_all/taxonomy_16S.csv")
-taxV3_V4_18s <- read_csv("data_all/taxonomy_18S.csv")
-
-colnames(taxV3_V4_16s)[which(names(taxV3_V4_16s) == "name...1")] <- "zotu"
-colnames(taxV3_V4_18s)[which(names(taxV3_V4_18s) == "name...1")] <- "zotu"
-
-taxV3_V4_16s <- taxV3_V4_16s[, c("zotu", "biodomain", "phylum", "class", "bioorder","family", 
-                                 "genus","species")]
-
-taxV3_V4_18s <- taxV3_V4_18s[, c("zotu", "biodomain", "phylum", "class", "bioorder","family", 
-                                 "genus","species")]
-
-# Concatenate the two taxonomy data frames
-taxV3_V4 <- bind_rows(taxV3_V4_16s, taxV3_V4_18s)
-
-colnames(subset)[which(names(subset) == "Variables")] <- "zotu"
-
-top_10_otus_all <- left_join(subset, taxV3_V4, by = "zotu")
-
-# Create a nested label
-top_10_otus_all <- top_10_otus_all %>%
-  mutate(nested_label = paste(biodomain, genus, sep = " - "))
-
-# Plot using the nested label
-top_10_all <- ggplot(top_10_otus_all, aes(x = reorder(nested_label, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "All data: Baltic Sea", x = "Variable", y = "Importance") +
-  theme_minimal()
-
-print(top_10_all)
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_all <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_all)
-
-pr_value_all <-pr_curve$auc.integral
 
 ############### all model with all locations
 
@@ -716,156 +620,55 @@ train_control <- trainControl(method = "cv",
 
 # Tuning grid for Random Forest
 tune_grid <- expand.grid(mtry = c(2, 3))
-
 # Train the Random Forest model with cross-validation on the SMOTE balanced data
 set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)
 
-rf_model_cv$bestTune
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_all_all <- auc(roc_curve)
-print(auc_value_all_all)  # Area Under the Curve (AUC)
+# Display comparison
+cat("Real model AUPR:", round(pr_value_all_all_loc, 3), "\n")
 
-# Adjust the threhold o fix false positives
-threshold <- 0.64
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-conf_matrix_all <- confusionMatrix(as.factor(predicted_class_threshold), test_data$v_vul_presence)
-print(conf_matrix_all)
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_all_all_loc <- mean(aupr_scrambled >= pr_value_all_all_loc)
+cat("P-value (null AUPR ≥ real AUPR):", round(pr_value_all_all_loc, 4), "\n")
 
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
 
-
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_all_all_loc <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
-
-# Print the results_manual to verify
-print(results_manual_rf_all_all_loc)
-
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_all_all_loc %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_all_all_loc <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "All data: Baltic Sea and Warnow Estuary", x = "Variables", y = "Importance") +
+# Plot with ggplot2
+hist_all_all_loc <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_all_all_loc, color = "red", linewidth = 1.2) +
+  labs(title = "Combined dataset:\n Baltic Sea and Warnow Estuary",
+       x = "AUPR (Scrambled)", y = "Count") +
   theme_minimal()
-
-
-subset <- importance_reg_df[1:10, ]
-
-taxV3_V4_16s <- read_csv("data_all/taxonomy_16S.csv")
-taxV3_V4_18s <- read_csv("data_all/taxonomy_18S.csv")
-
-colnames(taxV3_V4_16s)[which(names(taxV3_V4_16s) == "name...1")] <- "zotu"
-colnames(taxV3_V4_18s)[which(names(taxV3_V4_18s) == "name...1")] <- "zotu"
-
-taxV3_V4_16s <- taxV3_V4_16s[, c("zotu", "biodomain", "phylum", "class", "bioorder","family", 
-                                 "genus","species")]
-
-taxV3_V4_18s <- taxV3_V4_18s[, c("zotu", "biodomain", "phylum", "class", "bioorder","family", 
-                                 "genus","species")]
-
-# Concatenate the two taxonomy data frames
-taxV3_V4 <- bind_rows(taxV3_V4_16s, taxV3_V4_18s)
-
-colnames(subset)[which(names(subset) == "Variables")] <- "zotu"
-
-top_10_otus_all_all_loc <- left_join(subset, taxV3_V4, by = "zotu")
-
-# Create a nested label
-top_10_otus_all_all_loc <- top_10_otus_all_all_loc %>%
-  mutate(nested_label = paste(biodomain, genus, sep = " - "))
-
-# Plot using the nested label
-top_10_all_all_loc <- ggplot(top_10_otus_all_all_loc, aes(x = reorder(nested_label, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "All data: Baltic Sea and Warnow Estuary", x = "Variable", y = "Importance") +
-  theme_minimal()
-
-print(top_10_all_all_loc)
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_all_all_loc <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_all_all_loc)
-
-pr_value_all_all_loc <-pr_curve$auc.integral
 
 
 
@@ -1100,151 +903,53 @@ tune_grid <- expand.grid(mtry = c(2, 3))
 
 # Train the Random Forest model with cross-validation on the SMOTE balanced data
 set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",  # Optimize for ROC
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)  # Increase number of trees
 
-# Print the cross-validated model results
-print(rf_model_cv)
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-rf_model_cv$bestTune
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+# Display comparison
+cat("Real model AUPR (16S):", round(pr_value_16s, 3), "\n")
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_16s <- auc(roc_curve)
-print(auc_value_16s)  # Area Under the Curve (AUC)
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_16s <- mean(aupr_scrambled >= pr_value_16s)
+cat("P-value (null AUPR ≥ real AUPR):", round(p_value_null_16s, 4), "\n")
 
-#### Trying to fix false positives
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
 
-# Adjust the threshold
-threshold <- 0.664# Adjust this value to see how it impacts the results
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-
-# Confusion matrix with the new threshold
-conf_matrix_16s <- confusionMatrix(as.factor(predicted_class), test_data$v_vul_presence)
-print(conf_matrix_16s)
-
-
-
-
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_16s <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
-
-# Print the results_manual to verify
-print(results_manual_rf_16s)
-
-
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_16s %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_16s <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Top 10 Important Variables (Regression Model)", x = "Variables", y = "Importance") +
+# Plot with ggplot2
+hist_16s <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_16s, color = "red", linewidth = 1.2) +
+  labs(title = "16S rRNA relative abundance:\n Baltic Sea",
+       x = "AUPR (Scrambled)", y = "Count") +
   theme_minimal()
-
-
-subset <- importance_reg_df[1:10, ]
-
-taxV3_V4 <- read_csv("data_all/taxonomy_16S.csv")  
-
-colnames(taxV3_V4)[which(names(taxV3_V4) == "name...1")] <- "zotu"
-
-taxV3_V4 <- taxV3_V4[, c("zotu", "biodomain", "phylum", "class", "bioorder","family", 
-                         "genus","species")]
-
-
-
-colnames(subset)[which(names(subset) == "Variables")] <- "zotu"
-
-top_10_otus_16s <- left_join(subset, taxV3_V4, by = "zotu")
-
-# Top 10 important variables for Regression Model
-top_10_16s <- ggplot(top_10_otus_16s, aes(x = reorder(genus, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "16S rRNA rel. abundance: Baltic Sea", x = "Genus", y = "Importance") +
-  theme_minimal()
-
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_16s <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_16s)
-
-pr_value_16s <-pr_curve$auc.integral
 
 
 ############### 16s model all
@@ -1475,165 +1180,56 @@ train_control <- trainControl(method = "cv",        # Cross-validation method
 
 # Tuning grid for Random Forest
 tune_grid <- expand.grid(mtry = c(2, 3))
-
 # Train the Random Forest model with cross-validation on the SMOTE balanced data
 set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",  # Optimize for ROC
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)  # Increase number of trees
 
-# Print the cross-validated model results
-print(rf_model_cv)
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-rf_model_cv$bestTune
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+# Display comparison
+cat("Real model AUPR (16S_all_loc):", round(pr_value_16s_all_loc, 3), "\n")
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_16s_all <- auc(roc_curve)
-print(auc_value_16s_all)  # Area Under the Curve (AUC)
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_16s_all_loc <- mean(aupr_scrambled >= pr_value_16s_all_loc)
+cat("P-value (null AUPR ≥ real AUPR):", round(p_value_null_16s_all_loc, 4), "\n")
 
-#### Trying to fix false positives
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
 
-# Adjust the threshold
-threshold <- 0.664# Adjust this value to see how it impacts the results
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-
-# Confusion matrix with the new threshold
-conf_matrix_16s <- confusionMatrix(as.factor(predicted_class), test_data$v_vul_presence)
-print(conf_matrix_16s)
-
-
-
-
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_16s_all <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
-
-# Print the results_manual to verify
-print(results_manual_rf_16s_all)
-
-
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_16s_all %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_all_all_loc <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Top 10 Important Variables (Regression Model)", x = "Variables", y = "Importance") +
+# Plot with ggplot2
+hist_16s_all_loc <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_16s_all_loc, color = "red", linewidth = 1.2) +
+  labs(title = "16S rRNA relative abundance:\n Baltic Sea and Warnow Estuary",
+       x = "AUPR (Scrambled)", y = "Count") +
   theme_minimal()
 
-
-subset <- importance_reg_df[1:10, ]
-
-taxV3_V4 <- read_csv("data_all/taxonomy_16S.csv")  
-
-colnames(taxV3_V4)[which(names(taxV3_V4) == "name...1")] <- "zotu"
-
-taxV3_V4 <- taxV3_V4[, c("zotu", "biodomain", "phylum", "class", "bioorder","family", 
-                         "genus","species")]
-
-
-
-colnames(subset)[which(names(subset) == "Variables")] <- "zotu"
-
-top_10_otus_16s_all <- left_join(subset, taxV3_V4, by = "zotu")
-
-
-
-top_10_otus_16s_all$Overall <- as.numeric(top_10_otus_16s_all$Overall)
-
-# Aggregate Overall importance by genus
-genus_importance <- aggregate(Overall ~ genus, data = top_10_otus_16s_all, FUN = sum, na.rm = TRUE)
-
-# Sort by Overall importance in decreasing order
-genus_importance <- genus_importance[order(genus_importance$Overall, decreasing = TRUE), ]
-
-top10_genus <- head(genus_importance, 10)
-
-# Top 10 important variables for Regression Model
-top_10_16s_all <- ggplot(top10_genus, aes(x = reorder(genus, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "18S rRNA rel. abundance: Baltic Sea and Warnow Estuary", x = "Genus", y = "Importance") +
-  theme_minimal()
-
-
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_16s_all_loc <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_16s)
 
 pr_value_16s_all_loc <-pr_curve$auc.integral
 
@@ -1832,136 +1428,54 @@ tune_grid <- expand.grid(mtry = c(2, 3))
 
 # Train the Random Forest model with cross-validation on the SMOTE balanced data
 set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)
-rf_model_cv$bestTune
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_18s <- auc(roc_curve)
-print(auc_value_18s)  # Area Under the Curve (AUC)
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Adjust the threshold to fix false positives
-threshold <- 0.651
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-conf_matrix_18s <- confusionMatrix(as.factor(predicted_class_threshold), test_data$v_vul_presence)
-print(conf_matrix_18s)
+# Display comparison
+cat("Real model AUPR (18s):", round(pr_value_18s, 3), "\n")
 
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_18s <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_18s <- mean(aupr_scrambled >= pr_value_18s)
+cat("P-value (null AUPR ≥ real AUPR):", round(p_value_null_18s, 4), "\n")
 
-# Print the results_manual to verify
-print(results_manual_rf_18s)
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
 
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_18s %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_18s <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Top 10 Important Variables (Regression Model)", x = "Variables", y = "Importance") +
+# Plot with ggplot2
+hist_18s <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_18s, color = "red", linewidth = 1.2) +
+  labs(title = "18S rRNA relative abundance:\n Baltic Sea",
+       x = "AUPR (Scrambled)", y = "Count") +
   theme_minimal()
 
-subset <- importance_reg_df[1:10, ]
-
-taxV3_V4 <- read_csv("data_all/taxonomy_18S.csv")  
-
-colnames(taxV3_V4)[which(names(taxV3_V4) == "name...1")] <- "zotu"
-
-taxV3_V4 <- taxV3_V4[, c("zotu", "biodomain", "phylum", "class", "bioorder","family", 
-                         "genus","species")]
-
-colnames(subset)[which(names(subset) == "Variables")] <- "zotu"
-
-top_10_otus_18s <- left_join(subset, taxV3_V4, by = "zotu")
-
-
-# Top 10 important variables for Regression Model
-top_10_18s <- ggplot(top_10_otus_18s, aes(x = reorder(genus, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "18S rRNA rel. abundance: Baltic Sea", x = "Genus", y = "Importance") +
-  theme_minimal()
-
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_18s <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_18s)
-
-pr_value_18s <-pr_curve$auc.integral
 
 
 
@@ -2158,149 +1672,52 @@ train_control <- trainControl(method = "cv",
 # Tuning grid for Random Forest
 tune_grid <- expand.grid(mtry = c(2, 3))
 
-# Train the Random Forest model with cross-validation on the SMOTE balanced data
-set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)
-rf_model_cv$bestTune
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_18s_all <- auc(roc_curve)
-print(auc_value_18s)  # Area Under the Curve (AUC)
+# Display comparison
+cat("Real model AUPR (18s_all_loc):", round(pr_value_18s_all_loc, 3), "\n")
 
-# Adjust the threshold to fix false positives
-threshold <- 0.651
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-conf_matrix_18s <- confusionMatrix(as.factor(predicted_class_threshold), test_data$v_vul_presence)
-print(conf_matrix_18s)
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_18s_all_loc <- mean(aupr_scrambled >= pr_value_18s_all_loc)
+cat("P-value (null AUPR ≥ real AUPR):", round(p_value_null_18s_all_loc, 4), "\n")
 
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_18s_all <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
 
-# Print the results_manual to verify
-print(results_manual_rf_18s_all)
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_18s_all %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_18s_all <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Top 10 Important Variables (Regression Model)", x = "Variables", y = "Importance") +
+# Plot with ggplot2
+hist_18s_all_loc <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_all_loc, color = "red", linewidth = 1.2) +
+  labs(title = "18S rRNA relative abundance:\n Baltic Sea and Warnow Estuary",
+       x = "AUPR (Scrambled)", y = "Count") +
   theme_minimal()
-
-
-
-
-subset <- importance_reg_df[1:10, ]
-
-taxV3_V4 <- read_csv("data_all/taxonomy_18S.csv")  
-
-colnames(taxV3_V4)[which(names(taxV3_V4) == "name...1")] <- "zotu"
-
-taxV3_V4 <- taxV3_V4[, c("zotu", "biodomain", "phylum", "class", "bioorder","family", 
-                         "genus","species")]
-
-colnames(subset)[which(names(subset) == "Variables")] <- "zotu"
-
-top_10_otus_18s_all <- left_join(subset, taxV3_V4, by = "zotu")
-
-
-
-top_10_otus_18s_all$Overall <- as.numeric(top_10_otus_18s_all$Overall)
-
-# Aggregate Overall importance by genus
-genus_importance <- aggregate(Overall ~ genus, data = top_10_otus_18s_all, FUN = sum, na.rm = TRUE)
-
-# Sort by Overall importance in decreasing order
-genus_importance <- genus_importance[order(genus_importance$Overall, decreasing = TRUE), ]
-
-top10_genus <- head(genus_importance, 10)
-
-# Top 10 important variables for Regression Model
-top_10_18s_all <- ggplot(top10_genus, aes(x = reorder(genus, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "18S rRNA rel. abundance: Baltic Sea and Warnow Estuary", x = "Genus", y = "Importance") +
-  theme_minimal()
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_18s_all_loc <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_18s_all_loc)
 
 pr_value_18s_all_loc <-pr_curve$auc.integral
 
@@ -2436,120 +1853,56 @@ train_control <- trainControl(method = "cv",
 # Tuning grid for Random Forest
 tune_grid <- expand.grid(mtry = c(2, 3))
 
+
 # Train the Random Forest model with cross-validation on the SMOTE balanced data
 set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)
 
-rf_model_cv$bestTune
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_otc <- auc(roc_curve)
-print(auc_value_otc)  # Area Under the Curve (AUC)
+# Display comparison
+cat("Real model AUPR (otc):", round(pr_value_otc, 3), "\n")
 
-# Adjust the threshold to fix false positives
-threshold <- 0.7355
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-conf_matrix_otc <- confusionMatrix(as.factor(predicted_class_threshold), test_data$v_vul_presence)
-print(conf_matrix_otc)
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_otc <- mean(aupr_scrambled >= pr_value_otc)
+cat("P-value (null AUPR ≥ real AUPR):", round(p_value_null_otc, 4), "\n")
 
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_otc <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
 
-# Print the results_manual to verify
-print(results_manual_rf_otc)
-
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_otc %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_otc_plot <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Biological/physical data: Baltic Sea", x = "Variables", y = "Importance") +
+# Plot with ggplot2
+hist_otc <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_otc, color = "red", linewidth = 1.2) +
+  labs(title = "Biological and Physical parameters:\n Baltic Sea",
+       x = "AUPR (Scrambled)", y = "Count") +
   theme_minimal()
-
-top_10_otc <- importance_reg_df[1:10, ]
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_otc <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_otc)
-
-pr_value_otc <-pr_curve$auc.integral
 
 
 ####### otc all
@@ -2684,119 +2037,53 @@ tune_grid <- expand.grid(mtry = c(2, 3))
 
 # Train the Random Forest model with cross-validation on the SMOTE balanced data
 set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)
 
-rf_model_cv$bestTune
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_otc_all <- auc(roc_curve)
-print(auc_value_otc)  # Area Under the Curve (AUC)
+# Display comparison
+cat("Real model AUPR (otc_all):", round(pr_value_otc_all_loc, 3), "\n")
 
-# Adjust the threshold to fix false positives
-threshold <- 0.7355
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-conf_matrix_otc <- confusionMatrix(as.factor(predicted_class_threshold), test_data$v_vul_presence)
-print(conf_matrix_otc)
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_otc_all_loc <- mean(aupr_scrambled >= pr_value_otc_all_loc)
+cat("P-value (null AUPR ≥ real AUPR):", round(p_value_null_otc_all_loc, 4), "\n")
 
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_otc_all <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
 
-# Print the results_manual to verify
-print(results_manual_rf_otc_all)
-
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_otc_all %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_otc_all_plot <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Biological/physical data: Baltic Sea and Warnow Estuary", 
-       x = "Variables", y = "Importance") +
+# Plot with ggplot2
+hist_otc_all_loc <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_otc_all_loc, color = "red", linewidth = 1.2) +
+  labs(title = "Biological and Physical parameters:\n Baltic Sea and Warnow Estuary",
+       x = "AUPR (Scrambled)", y = "Count") +
   theme_minimal()
-
-top_10_otc_all <- importance_reg_df[1:10, ]
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_otc_all_loc <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_otc_all_loc)
-
-pr_value_otc_all_loc <-pr_curve$auc.integral
 
 ######### copernicus data
 
@@ -2925,537 +2212,75 @@ tune_grid <- expand.grid(mtry = c(2, 3))
 
 # Train the Random Forest model with cross-validation on the SMOTE balanced data
 set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)
 
-rf_model_cv$bestTune
+n_null <- 50
+aupr_scrambled <- numeric(n_null)
 
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
+for (i in 1:n_null) {
+  # Scramble training labels
+  train_data_scrambled <- train_data
+  train_data_scrambled$v_vul_presence <- sample(train_data$v_vul_presence)
+  
+  # Apply SMOTE to scrambled training data
+  scrambled_smote <- SMOTE(v_vul_presence ~ ., data = train_data_scrambled, perc.over = 200, perc.under = 100)
+  
+  # Train RF model on scrambled labels
+  rf_model_scrambled <- caret::train(v_vul_presence ~ ., data = scrambled_smote,
+                                     method = "rf",
+                                     metric = "ROC",
+                                     trControl = train_control,
+                                     tuneGrid = tune_grid,
+                                     ntree = 500)
+  
+  # Predict probabilities on real test set
+  scrambled_prob <- predict(rf_model_scrambled, test_data, type = "prob")[, "Present"]
+  
+  # Compute AUPR using real labels from test set
+  aupr_null <- pr.curve(scores.class0 = scrambled_prob,
+                        weights.class0 = as.numeric(test_data$v_vul_presence == "Present"))$auc.integral
+  
+  aupr_scrambled[i] <- aupr_null
+}
 
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_copernicus <- auc(roc_curve)
-print(auc_value_copernicus)  # Area Under the Curve (AUC)
+# Display comparison
+cat("Real model AUPR (cop):", round(pr_value_cop, 3), "\n")
 
-# Adjust the thresh0ld to fix false positives
-threshold <- 0.656
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-conf_matrix_copernicus <- confusionMatrix(as.factor(predicted_class_threshold), test_data$v_vul_presence)
-print(conf_matrix_copernicus)
+# Compute p-value: how many null AUPRs are ≥ real AUPR
+p_value_null_cop <- mean(aupr_scrambled >= pr_value_cop)
+cat("P-value (null AUPR ≥ real AUPR):", round(p_value_null_cop, 4), "\n")
 
-# Create results_manual dataframe with actual and predicted data
-results_manual_rf_copernicus <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
+# Create dataframe for ggplot
+df_null <- data.frame(AUPR = aupr_scrambled)
+
+# Plot with ggplot2
+hist_copernicus <- ggplot(df_null, aes(x = AUPR)) +
+  geom_histogram(bins = 30, fill = "lightgray", color = "black") +
+  geom_vline(xintercept = pr_value_cop, color = "red", linewidth = 1.2) +
+  labs(title = "Copernicus satellite data\n Baltic Sea",
+       x = "AUPR (Scrambled)", y = "Count") +
+  theme_minimal()
+
+
+combined_plot <- (
+  hist_16s + hist_16s_all_loc +
+    hist_18s + hist_16s_all_loc +
+    hist_copernicus + hist_all +
+    hist_all_all_loc + hist_otc +
+    hist_otc_all_loc
+) +
+  plot_layout(ncol = 3) +
+  plot_annotation(
+    caption = "Bootstrapped and Null AUPR Distributions Across All Models",
+    theme = theme(
+      plot.caption = element_text(
+        hjust = 0.5,
+        size = 16,
+        face = "bold"
+      )
     )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
-
-
-# Print the results_manual to verify
-print(results_manual_rf_copernicus)
-
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual_rf_copernicus %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_copernicus_plot <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Copernicus satellite data: Baltic Sea", x = "Variables", y = "Importance") +
-  theme_minimal()
-
-top_10_copernicus <- importance_reg_df[1:10, ]
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_copernicus <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_copernicus)
-
-pr_value_cop <-pr_curve$auc.integral
-
-
-
-######### copernicus data with ulf data
-
-join_all_current_discharge_hplc_temp_weather <- read_csv("data_all/join_all_current_discharge_hplc_temp_weather_full_year.csv")
-
-
-join_all_current_discharge_hplc_temp_weather <- join_all_current_discharge_hplc_temp_weather %>% 
-  select(c(
-    "sample", "quality_windspeed", 
-    "mean_windspeed", "precipitation_height", "precipitation_form", 
-    "sunshine_duration", "snow_depth", "mean_cloud_cover",
-    "mean_pressure", "mean_relative_humidity", 
-    "diffuse_solar_radiation", 
-    "sunshine_duration_solar", "v_vul_total_abundance", "O2",
-    "salt", "uu", "vv" 
-  ))
-
-
-join_all_current_discharge_hplc_temp_weather$location <- as.numeric(
-  substr(join_all_current_discharge_hplc_temp_weather$sample, 2, 3))
-
-
-copernicus_data <- read_csv("data_all/copernicus_data.csv")
-
-
-copernicus_data <- copernicus_data %>% 
-  select((!c( "ssh_15_m",  "pot_temp_sea_floor_1m", "mixed_layer_thickness_1m","salinity_1m", "location",
-              "salinity_sea_floor_1m", "temp_potent_1m" , "velocity_east", "velocity_north",        
-              "velocity_south_1m", "velocity_north_1m", "velocity_upward_1m", "ssh_untided_1d",
-              "pot_temp_sea_floor_1d", "pot_temp_sea_floor_1d", "mixed_layer_thickness_1d", "salinity_1d",
-              "salinity_sea_floor_1d", "temp_potent_1d", "velocity_south_1d", "velocity_north_1d",
-              "velocity_upward_1d", "velocity_east_detided", "pot_temp_sea_floor_1h","velocity_north_detided")))
-
-colnames(join_all_current_discharge_hplc_temp_weather)[which(names(
-  join_all_current_discharge_hplc_temp_weather) ==  "date.x")] <- "date"
-
-copernicus_data_ddpcr <- left_join(copernicus_data, join_all_current_discharge_hplc_temp_weather, by = "sample")
-
-
-copernicus_data_ddpcr <- na.omit(copernicus_data_ddpcr)
-
-# remove columns of all same value
-
-logistic_reg <- copernicus_data_ddpcr[vapply(copernicus_data_ddpcr, function(x) length(unique(x)) > 1, logical(1L))]
-
-
-#logistic_reg <- subset(logistic_reg, location %in%  
-#                         c("Heiligendamm", "Borgerende", "Nienhagen", "Warnemuende"))
-#logistic_reg <-join_all_current_discharge_hplc_temp_weather
-
-# Add a new column 'v_vul_presence' to the 'logistic_reg' data frame
-logistic_reg <- logistic_reg %>%
-  mutate(v_vul_presence = ifelse(v_vul_total_abundance == 0, 0, 1))
-
-logistic_reg$v_vul_presence <- as.factor(logistic_reg$v_vul_presence)
-
-logistic_reg <- logistic_reg %>% 
-  select((!c("lon", "lat", "sample",
-             "date_time", "...1", "time", "v_vul_total_abundance" )))
-
-
-
-#logistic_reg <- logistic_reg %>% 
-#  select((!c( "sample", "v_vul_total_abundance" )))
-
-# Remove missing values
-logistic_reg <- na.omit(logistic_reg)
-
-otu_16s_filtered_rel_rf <- logistic_reg
-
-
-# Prepare the data
-set.seed(7896)  # For reproducibility
-X <- otu_16s_filtered_rel_rf
-
-# Ensure the response variable is a factor with valid level names
-y <- factor(otu_16s_filtered_rel_rf$v_vul_presence, levels = c(0, 1), labels = c("Absent", "Present"))
-
-# Combine the predictors and response into one data frame for caret
-data <- cbind(X, v_vul_presence = y)
-
-# Remove missing values
-data <- na.omit(data)
-
-# Check the class distribution
-table(y)
-
-# Remove duplicated columns
-# Remove duplicated columns
-data <- data %>% 
-  select(-c("v_vul_presence"))
-
-# Check the class distribution
-table(y)
-
-# Step 2: Split dataset into training and testing
-#train_data <- otu_16s_filtered_rel_rf %>% filter(!location %in% c(6, 12))
-#test_data  <- otu_16s_filtered_rel_rf %>% filter(location %in% c(6, 12))
-# Step 2: Split dataset into training and testing
-
-train_data <- data %>% filter(!location %in% c(7, 11, 13))
-test_data  <- data %>% filter(location %in% c(7, 11, 13))
-
-test_data_with_date <- test_data
-
-# Remove duplicated columns
-train_data <- train_data %>% 
-  select(-c("location", "date"))
-
-test_data <- test_data %>% 
-  select(-c("location", "date"))
-# Apply SMOTE to the training data
-# Apply SMOTE to the training data
-set.seed(7896)
-train_data_smote <- SMOTE(v_vul_presence ~ ., data = train_data, perc.over = 200, perc.under = 100)
-
-# Define the train control for k-fold cross-validation
-train_control <- trainControl(method = "cv",
-                              number = 10,
-                              classProbs = TRUE,
-                              summaryFunction = twoClassSummary,
-                              savePredictions = "final")
-
-# Tuning grid for Random Forest
-tune_grid <- expand.grid(mtry = c(2, 3))
-
-# Train the Random Forest model with cross-validation on the SMOTE balanced data
-set.seed(7896)
-rf_model_cv <- caret::train(v_vul_presence ~ ., data = train_data_smote,
-                            method = "rf",
-                            metric = "ROC",
-                            trControl = train_control,
-                            tuneGrid = tune_grid,
-                            ntree = 500)
-
-rf_model_cv$bestTune
-
-# Evaluate the model's performance on the test data
-predicted_class <- predict(rf_model_cv, test_data)
-conf_matrix <- confusionMatrix(predicted_class, test_data$v_vul_presence)
-print(conf_matrix)
-
-# Plot the ROC curve and calculate AUC for the test data
-predicted_prob <- predict(rf_model_cv, test_data, type = "prob")[, "Present"]
-roc_curve <- roc(test_data$v_vul_presence, predicted_prob)
-plot(roc_curve, col = "blue", main = "ROC Curve")
-auc_value_ulf <- auc(roc_curve)
-print(auc_value_ulf)  # Area Under the Curve (AUC)
-
-# Adjust the thresh0ld to fix false positives
-threshold <- 0.656
-predicted_class_threshold <- ifelse(predicted_prob > threshold, "Present", "Absent")
-conf_matrix_ulf <- confusionMatrix(as.factor(predicted_class_threshold), test_data$v_vul_presence)
-print(conf_matrix_ulf)
-
-# Create results_manual dataframe with actual and predicted data
-results_manual <- data.frame(
-  Date = test_data_with_date$date,
-  Week = week(test_data_with_date$date),
-  Actual = test_data$v_vul_presence,
-  Predicted_Class = predicted_class_threshold,
-  Predicted_probability = predicted_prob
-) %>%
-  mutate(
-    Category = case_when(
-      Actual == "Present" & Predicted_Class == "Present" ~ "True Positive",
-      Actual == "Absent" & Predicted_Class == "Absent" ~ "True Negative",
-      Actual == "Absent" & Predicted_Class == "Present" ~ "False Positive",
-      Actual == "Present" & Predicted_Class == "Absent" ~ "False Negative"
-    )
-  ) %>%
-  arrange(Date)  # Sort by Date to ensure proper alignment
-
-
-# Print the results_manual to verify
-print(results_manual)
-
-
-# Step 3: Group by Week and Category to count occurrences
-weekly_summary <- results_manual %>%
-  group_by(Week, Category) %>%
-  dplyr::summarise(Count = n()) %>%
-  ungroup()
-
-# Step 4: Create stacked bar chart with ggplot
-ggplot(weekly_summary, aes(x = Week, y = Count, fill = Category)) +
-  geom_bar(stat = "identity", position = "stack") +
-  labs(title = "Prediction Performance by Week", x = "Week", y = "Count") +
-  scale_fill_manual(values = c("True Positive" = "green", "True Negative" = "blue",
-                               "False Positive" = "red", "False Negative" = "orange")) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Print the importance of predictors
-importance_values_reg <- varImp(rf_model_cv, scale = FALSE)
-
-print("Variable Importance for Regression Model:")
-print(importance_values_reg)
-
-# Visualize the top 10 important variables for the Regression Model
-importance_reg_df <- as.data.frame(importance_values_reg$importance)
-importance_reg_df$Variables <- rownames(importance_reg_df)
-importance_reg_df <- importance_reg_df %>% arrange(desc(Overall))
-
-# Top 10 important variables for Regression Model
-top_10_time_lag_0 <- ggplot(importance_reg_df[1:10, ], aes(x = reorder(Variables, Overall), y = Overall)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Top 10 Important Variables (Regression Model)", x = "Variables", y = "Importance") +
-  theme_minimal()
-
-top_10_otus_ulf <- importance_reg_df[1:10, ]
-
-test <- test_data
-
-test$v_vul_presence <- ifelse(test_data$v_vul_presence == "Present", 1, 0)
-
-# Get predicted probabilities
-predicted_prob <- predict(rf_model_cv, test, type = "prob")[, "Present"]
-
-# Compute Precision-Recall Curve
-pr_curve <- pr.curve(scores.class0 = predicted_prob, weights.class0 = test$v_vul_presence, curve = TRUE)
-
-# Extract curve data
-pr_data <- data.frame(
-  Recall = pr_curve$curve[, 1],   # Recall
-  Precision = pr_curve$curve[, 2] # Precision
-)
-
-# Create a ggplot object for the PR curve
-pr_plot_ulf <- ggplot(pr_data, aes(x = Recall, y = Precision)) +
-  geom_line(color = "blue", linewidth =2) +
-  ggtitle(paste("Precision-Recall Curve (AUPR =", round(pr_curve$auc.integral, 3), ")")) +
-  xlab("Recall") +
-  ylab("Precision") +
-  theme_minimal()
-
-# Print the plot (optional)
-print(pr_plot_ulf)
-
-pr_value_ulf <-pr_curve$auc.integral
-
-
-##### for curves
-
-
-# Store AUC values in a vector
-
-pr_value_values <- c(pr_value_all, pr_value_otc, pr_value_16s, pr_value_18s, pr_value_cop)
-
-# Create a data frame
-# Define custom labels for the x-axis
-custom_labels <- c("All data", "Physical data", "16S data", "18S data", "Copernicus data")  # Adjust labels as needed
-
-# Create a data frame
-pr_value_data <- data.frame(
-  Model = factor(custom_labels, levels = custom_labels),  # Custom x-axis labels
-  AUC = pr_value_values  # Y-axis (AUC values)
-)
-
-# Create AUC plot
-pr_value_plot <- ggplot(pr_value_data, aes(x = Model, y = AUC)) +
-  geom_point(size = 3, color = "blue") +   
-  geom_line(group = 1, color = "blue") +   
-  ggtitle("AUPRC for Random Forest Time-Lag 0-10") +
-  xlab("Time-lag") +
-  ylab("Area Under the Precision-Recall Curve") +
-  ylim(0, 1) +  
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-    axis.title = element_text(size = 12),
-    axis.text = element_text(size = 10)
   )
 
-# Print the plot
-print(pr_value_plot)
-
-
-# Store AUC values in a vector
-auc_value_values <- c(auc_value_all, auc_value_otc, auc_value_16s, auc_value_18s, 
-                      auc_value_cop)
-# Define custom labels for the x-axis
-custom_labels <- c("All data", "Physical data", "16S data", "18S data", "Copernicus data")  # Adjust labels as needed
-
-# Create a data frame
-auc_value_data <- data.frame(
-  Model = factor(custom_labels, levels = custom_labels),  # Custom x-axis labels
-  AUC = auc_value_values  # Y-axis (AUC values)
-)
-
-# Ensure both plots have the same x-axis labels and formatting
-pr_value_plot <- ggplot(pr_value_data, aes(x = Model, y = AUC)) +
-  geom_point(size = 3, color = "blue") +   
-  geom_line(group = 1, color = "blue") +   
-  ggtitle("AUPRC for Random Forest Time-Lag 0-10") +
-  xlab("Time-lag") +
-  ylab("AUPRC") +
-  ylim(0.3, 0.65) +  
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-    axis.title = element_text(size = 12),
-    axis.text = element_text(size = 10)
-  )
-
-auc_value_plot <- ggplot(auc_value_data, aes(x = Model, y = AUC)) +
-  geom_point(size = 3, color = "red") +   
-  geom_line(group = 1, color = "red") +   
-  ggtitle("ROC-AUC for Random Forest Time-Lag 0-10") +
-  xlab("Time-lag") +
-  ylab("AUROC") +
-  ylim(0.9, 0.97) +  
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-    axis.title = element_text(size = 12),
-    axis.text = element_text(size = 10)
-  )
-
-# Combine the two plots in a single figure
-final_plot <- pr_value_plot / auc_value_plot  # Places them vertically
-
-# Print the combined plot
-print(final_plot)
-
-################################## most important parameters graph
-
-# Rename each plot clearly
-p1 <- top_10_all
-p2 <- top_10_all_all_loc
-p3 <- top_10_16s
-p4 <- top_10_16s_all
-p5 <- top_10_18s
-p6 <- top_10_18s_all
-p7 <- top_10_otc_plot
-p8 <- top_10_otc_all_plot
-p9 <- top_10_copernicus_plot
-
-combined_plot <- ( plot_spacer()| p9  ) /
-  (p2 | p1 ) /
-  (p4 | p3 ) /
-  (p6 | p5 ) /
-  (p8 | p7 )
-
+# Display
 print(combined_plot)
 
-ggsave(
-  "images/predictors.tiff",
-  combined_plot,
-  width = 11,     # inches
-  height = 10,    # adjust if needed
-  dpi  = 1000,   # resolution for line art
-  compression = "lzw"
-)
 
-
-# Define test set names
-test_sets <- c("copernicus", "16s", "16s_all", "18s", "18s_all", 
-               "all", "all_all", "otc", "otc_all")
-
-# Define AUPRC and ROC AUC values
-auprc_values <- c(
-  pr_value_cop, pr_value_16s, pr_value_16s_all_loc, 
-  pr_value_18s, pr_value_18s_all_loc, pr_value_all, 
-  pr_value_all_all_loc, pr_value_otc, pr_value_otc_all_loc
-)
-
-rocauc_values <- c(
-  auc_value_copernicus, auc_value_16s, auc_value_16s_all, 
-  auc_value_18s, auc_value_18s_all, auc_value_all, 
-  auc_value_all_all, auc_value_otc, auc_value_otc_all
-)
-
-# Create the data frame
-summary_table <- data.frame(
-  Dataset = test_sets,
-  Test_AUPRC = round(auprc_values, 3),
-  Test_ROC_AUC = round(rocauc_values, 3)
-)
-
-# Print the table
-print(summary_table)
-
-# Save to CSV
-write.csv(summary_table, "rf_summary_table.csv", row.names = FALSE)
-
-##### save all otu tables
-# 
-# write.csv(
-#   top_10_otus_16s,
-#   "data_all/excel_jmp_tables/16s_rf_top_otus.csv",
-#   row.names = TRUE
-# )
-# 
-# write.csv(
-#   top_10_otus_18s,
-#   "data_all/excel_jmp_tables/18s_rf_top_otus.csv",
-#   row.names = TRUE
-# )
-# 
-# write.csv(
-#   top_10_otus_all,
-#   "data_all/excel_jmp_tables/all_rf_top_otus.csv",
-#   row.names = TRUE
-# )
-# 
-# write.csv(
-#   top_10_otus_copernicus,
-#   "data_all/excel_jmp_tables/copernicus_rf_top_otus.csv",
-#   row.names = TRUE
-# )
-# 
-# write.csv(
-#   top_10_otus_otc,
-#   "data_all/excel_jmp_tables/otc_rf_top_otus.csv",
-#   row.names = TRUE
-# )
-# 
