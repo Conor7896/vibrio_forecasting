@@ -174,5 +174,9 @@ Filtered 18S rRNA ASV/OTU abundance table representing eukaryotic microbial comm
 taxonomy_16s.csv	
 Taxonomic assignments for all 16S ASVs/OTUs, including hierarchical taxonomy from kingdom to species (where available). Used to map ASVs to taxonomic labels for ecological interpretation and feature importance summaries.
 
+taxonomy_18s.csv 
+Taxonomic assignments for all 18S rRNA ASVs/OTUs, including hierarchical taxonomy from kingdom to species (where resolvable). This table links the 18S abundance data to eukaryotic taxonomic groups and is used for ecological interpretation, feature importance summaries, and community-level analyses. |
+
+
 v_vul_otu.csv	
 Derived microbial dataset focusing on OTUs relevant to Vibrio vulnificus. Used in exploratory analysis and to link microbial composition with pathogen presence/absence.
