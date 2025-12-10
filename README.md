@@ -158,3 +158,21 @@ Here is a description of all datasets used:
 join_all_current_discharge_hplc_temp_weather_full_year.csv
 
 A processed data file containing merged environmental and discharge variables used in Random Forest and LSTM analyses.
+
+copernicus_data.csv	
+Environmental and oceanographic variables derived from the Copernicus Marine Service. Includes satellite or reanalysis variables (e.g., sea surface temperature, salinity, currents). Used as input features in the Copernicus-based Random Forest and LSTM models.
+
+join_all_current_discharge_hplc_temp_weather_full_year.csv	
+Fully merged environmental dataset containing current measurements, river discharge, nutrient concentrations (HPLC), water temperature, and meteorological variables for the entire sampling year. This is the main environmental feature table used in model training and testing.
+
+otus_16s_filtered.csv	
+Filtered 16S rRNA ASV/OTU abundance table containing prokaryotic microbial community profiles after quality control and feature filtering. Used in microbial-community Random Forest and LSTM modelling.
+
+otus_18S_filtered_no1.csv	
+Filtered 18S rRNA ASV/OTU abundance table representing eukaryotic microbial community structure. Used in 18S-based predictive modelling and ecological comparisons.
+
+taxonomy_16s.csv	
+Taxonomic assignments for all 16S ASVs/OTUs, including hierarchical taxonomy from kingdom to species (where available). Used to map ASVs to taxonomic labels for ecological interpretation and feature importance summaries.
+
+v_vul_otu.csv	
+Derived microbial dataset focusing on OTUs relevant to Vibrio vulnificus. Used in exploratory analysis and to link microbial composition with pathogen presence/absence.
